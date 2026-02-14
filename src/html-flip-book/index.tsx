@@ -25,6 +25,24 @@ const HTMLFlipBookForward = React.forwardRef(
 
         const [pages, setPages] = useState<ReactElement[]>([]);
 
+        // Ref-bridge: store callbacks in refs so handlers are never stale
+        const onFlipRef = useRef(props.onFlip);
+        const onChangeOrientationRef = useRef(props.onChangeOrientation);
+        const onChangeStateRef = useRef(props.onChangeState);
+        const onInitRef = useRef(props.onInit);
+        const onUpdateRef = useRef(props.onUpdate);
+
+        useEffect(() => {
+            onFlipRef.current = props.onFlip;
+            onChangeOrientationRef.current = props.onChangeOrientation;
+            onChangeStateRef.current = props.onChangeState;
+            onInitRef.current = props.onInit;
+            onUpdateRef.current = props.onUpdate;
+        });
+
+        // Track whether handlers have been registered
+        const handlersRegistered = useRef(false);
+
         useImperativeHandle(ref, () => ({
             pageFlip: () => pageFlip.current,
         }));
@@ -32,18 +50,6 @@ const HTMLFlipBookForward = React.forwardRef(
         const refreshOnPageDelete = useCallback(() => {
             if (pageFlip.current) {
                 pageFlip.current.clear();
-            }
-        }, []);
-
-        const removeHandlers = useCallback(() => {
-            const flip = pageFlip.current;
-
-            if (flip) {
-                flip.off('flip');
-                flip.off('changeOrientation');
-                flip.off('changeState');
-                flip.off('init');
-                flip.off('update');
             }
         }, []);
 
@@ -73,37 +79,22 @@ const HTMLFlipBookForward = React.forwardRef(
         }, [props.children]);
 
         useEffect(() => {
-            const setHandlers = () => {
-                const flip = pageFlip.current;
-
-                if (flip) {
-                    if (props.onFlip) {
-                        flip.on('flip', (e: unknown) => props.onFlip(e));
-                    }
-
-                    if (props.onChangeOrientation) {
-                        flip.on('changeOrientation', (e: unknown) => props.onChangeOrientation(e));
-                    }
-
-                    if (props.onChangeState) {
-                        flip.on('changeState', (e: unknown) => props.onChangeState(e));
-                    }
-
-                    if (props.onInit) {
-                        flip.on('init', (e: unknown) => props.onInit(e));
-                    }
-
-                    if (props.onUpdate) {
-                        flip.on('update', (e: unknown) => props.onUpdate(e));
-                    }
-                }
-            };
-
             if (pages.length > 0 && childRef.current.length > 0) {
-                removeHandlers();
-
                 if (htmlElementRef.current && !pageFlip.current) {
-                    pageFlip.current = new PageFlip(htmlElementRef.current, props);
+                    // Patch removeChild to handle nodes that PageFlip reparents
+                    const el = htmlElementRef.current;
+                    const origRemoveChild = el.removeChild.bind(el);
+                    el.removeChild = function <T extends Node>(child: T): T {
+                        if (child.parentNode === el) {
+                            return origRemoveChild(child);
+                        }
+                        if (child.parentNode) {
+                            return child.parentNode.removeChild(child) as T;
+                        }
+                        return child;
+                    };
+
+                    pageFlip.current = new PageFlip(el, props);
                 }
 
                 if (!pageFlip.current.getFlipController()) {
@@ -112,10 +103,43 @@ const HTMLFlipBookForward = React.forwardRef(
                     pageFlip.current.updateFromHtml(childRef.current);
                 }
 
-                setHandlers();
+                // Register handlers once via ref-bridge (stable, never stale)
+                if (!handlersRegistered.current) {
+                    const flip = pageFlip.current;
+                    flip.on('flip', (e: unknown) => onFlipRef.current?.(e));
+                    flip.on('changeOrientation', (e: unknown) => onChangeOrientationRef.current?.(e));
+                    flip.on('changeState', (e: unknown) => onChangeStateRef.current?.(e));
+                    flip.on('init', (e: unknown) => onInitRef.current?.(e));
+                    flip.on('update', (e: unknown) => onUpdateRef.current?.(e));
+                    handlersRegistered.current = true;
+                }
             }
             // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [pages]);
+
+        // startPage reactivity: navigate when startPage prop changes
+        useEffect(() => {
+            if (pageFlip.current && pageFlip.current.getFlipController()) {
+                const current = pageFlip.current.getCurrentPageIndex();
+                if (props.startPage !== undefined && props.startPage !== current) {
+                    pageFlip.current.turnToPage(props.startPage);
+                }
+            }
+        }, [props.startPage]);
+
+        // Cleanup on unmount
+        useEffect(() => {
+            return () => {
+                if (pageFlip.current) {
+                    try {
+                        pageFlip.current.getRender()?.stop();
+                    } catch (_) {
+                        // ignore if already destroyed
+                    }
+                    pageFlip.current = null;
+                }
+            };
+        }, []);
 
         return (
             <div ref={htmlElementRef} className={props.className} style={props.style}>

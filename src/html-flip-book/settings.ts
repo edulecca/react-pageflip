@@ -47,6 +47,9 @@ export interface IFlipSetting {
 
     /** if this value is true, flipping by clicking on the whole book will be locked. Only on corners */
     disableFlipByClick: boolean;
+
+    /** If true, only one page is shown at a time with flip animation */
+    singlePage: boolean;
 }
 
 export interface IBookState {
